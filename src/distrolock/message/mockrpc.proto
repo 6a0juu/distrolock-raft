@@ -1,0 +1,22 @@
+syntax = "proto3";
+package message;
+
+enum ActionType {
+    GET = 0;
+    PUT = 1;
+    APPEND = 2;
+}
+
+message Request {
+    required int32 user = 1;
+    required ActionType action = 2;
+    required int32 lockid = 3;
+}
+
+message Response {
+    required int32 user = 1;
+    required ActionType action = 2;
+    required int32 lockid = 3;
+    required bool status = 4;
+    optional int value = 5;
+}
