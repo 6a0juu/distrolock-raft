@@ -40,8 +40,7 @@ type config struct {
 	saved     []*Persister
 	endnames  [][]string    // the port file names each sends to
 	logs      []map[int]int // copy of each server's committed entries
-	start     time.Time     // time at which make_config() was called
-	// begin()/end() statistics
+	start     time.Time
 	t0        time.Time // time at which test_test.go called cfg.begin()
 	rpcs0     int       // rpcTotal() at start of test
 	cmds0     int       // number of agreements
@@ -75,13 +74,11 @@ func make_config(t *testing.T, n int, unreliable bool) *config {
 
 	cfg.net.LongDelays(true)
 
-	// create a full set of Rafts.
 	for i := 0; i < cfg.n; i++ {
 		cfg.logs[i] = map[int]int{}
 		cfg.start1(i)
 	}
 
-	// connect everyone
 	for i := 0; i < cfg.n; i++ {
 		cfg.connect(i)
 	}
@@ -92,15 +89,11 @@ func make_config(t *testing.T, n int, unreliable bool) *config {
 // shut down a Raft server but save its persistent state.
 func (cfg *config) crash1(i int) {
 	cfg.disconnect(i)
-	cfg.net.DeleteServer(i) // disable client connections to the server.
+	cfg.net.DeleteServer(i)
 
 	cfg.mu.Lock()
 	defer cfg.mu.Unlock()
 
-	// a fresh persister, in case old instance
-	// continues to update the Persister.
-	// but copy old persister's content so that we always
-	// pass Make() the last persisted state.
 	if cfg.saved[i] != nil {
 		cfg.saved[i] = cfg.saved[i].Copy()
 	}
@@ -124,8 +117,6 @@ func (cfg *config) crash1(i int) {
 func (cfg *config) start1(i int) {
 	cfg.crash1(i)
 
-	// a fresh set of outgoing ClientEnd names.
-	// so that old crashed instance's ClientEnds can't send.
 	cfg.endnames[i] = make([]string, cfg.n)
 	for j := 0; j < cfg.n; j++ {
 		cfg.endnames[i][j] = randstring(20)
@@ -140,10 +131,6 @@ func (cfg *config) start1(i int) {
 
 	cfg.mu.Lock()
 
-	// a fresh persister, so old instance doesn't overwrite
-	// new instance's persisted state.
-	// but copy old persister's content so that we always
-	// pass Make() the last persisted state.
 	if cfg.saved[i] != nil {
 		cfg.saved[i] = cfg.saved[i].Copy()
 	} else {
@@ -152,18 +139,15 @@ func (cfg *config) start1(i int) {
 
 	cfg.mu.Unlock()
 
-	// listen to messages from Raft indicating newly committed messages.
 	applyCh := make(chan ApplyMsg)
 	go func() {
 		for m := range applyCh {
 			err_msg := ""
 			if m.CommandValid == false {
-				// ignore other types of ApplyMsg
 			} else if v, ok := (m.Command).(int); ok {
 				cfg.mu.Lock()
 				for j := 0; j < len(cfg.logs); j++ {
 					if old, oldok := cfg.logs[j][m.CommandIndex]; oldok && old != v {
-						// some server has already committed a different value for this entry!
 						err_msg = fmt.Sprintf("commit index=%v server=%v %v != server=%v %v",
 							m.CommandIndex, i, m.Command, j, old)
 					}
@@ -185,8 +169,6 @@ func (cfg *config) start1(i int) {
 			if err_msg != "" {
 				log.Fatalf("apply error: %v\n", err_msg)
 				cfg.applyErr[i] = err_msg
-				// keep reading after error so that Raft doesn't block
-				// holding locks...
 			}
 		}
 	}()
@@ -204,7 +186,6 @@ func (cfg *config) start1(i int) {
 }
 
 func (cfg *config) checkTimeout() {
-	// enforce a two minute real-time limit on each test
 	if !cfg.t.Failed() && time.Since(cfg.start) > 120*time.Second {
 		cfg.t.Fatal("test took longer than 120 seconds")
 	}
@@ -220,13 +201,10 @@ func (cfg *config) cleanup() {
 	cfg.checkTimeout()
 }
 
-// attach server i to the net.
 func (cfg *config) connect(i int) {
-	// fmt.Printf("connect(%d)\n", i)
 
 	cfg.connected[i] = true
 
-	// outgoing ClientEnds
 	for j := 0; j < cfg.n; j++ {
 		if cfg.connected[j] {
 			endname := cfg.endnames[i][j]
@@ -234,7 +212,6 @@ func (cfg *config) connect(i int) {
 		}
 	}
 
-	// incoming ClientEnds
 	for j := 0; j < cfg.n; j++ {
 		if cfg.connected[j] {
 			endname := cfg.endnames[j][i]
@@ -249,7 +226,6 @@ func (cfg *config) disconnect(i int) {
 
 	cfg.connected[i] = false
 
-	// outgoing ClientEnds
 	for j := 0; j < cfg.n; j++ {
 		if cfg.endnames[i] != nil {
 			endname := cfg.endnames[i][j]
@@ -257,7 +233,6 @@ func (cfg *config) disconnect(i int) {
 		}
 	}
 
-	// incoming ClientEnds
 	for j := 0; j < cfg.n; j++ {
 		if cfg.endnames[j] != nil {
 			endname := cfg.endnames[j][i]
@@ -283,7 +258,6 @@ func (cfg *config) setlongreordering(longrel bool) {
 }
 
 // check that there's exactly one leader.
-// try a few times in case re-elections are needed.
 func (cfg *config) checkOneLeader() int {
 	for iters := 0; iters < 10; iters++ {
 		ms := 450 + (rand.Int63() % 100)
@@ -370,7 +344,6 @@ func (cfg *config) nCommitted(index int) (int, interface{}) {
 }
 
 // wait for at least n servers to commit.
-// but don't wait forever.
 func (cfg *config) wait(index int, n int, startTerm int) interface{} {
 	to := 10 * time.Millisecond
 	for iters := 0; iters < 30; iters++ {
@@ -385,8 +358,6 @@ func (cfg *config) wait(index int, n int, startTerm int) interface{} {
 		if startTerm > -1 {
 			for _, r := range cfg.rafts {
 				if t, _ := r.GetState(); t > startTerm {
-					// someone has moved on
-					// can no longer guarantee that we'll "win"
 					return -1
 				}
 			}
@@ -404,7 +375,6 @@ func (cfg *config) one(cmd int, expectedServers int, retry bool) int {
 	t0 := time.Now()
 	starts := 0
 	for time.Since(t0).Seconds() < 10 {
-		// try all the servers, maybe one is the leader.
 		index := -1
 		for si := 0; si < cfg.n; si++ {
 			starts = (starts + 1) % cfg.n
@@ -424,15 +394,11 @@ func (cfg *config) one(cmd int, expectedServers int, retry bool) int {
 		}
 
 		if index != -1 {
-			// somebody claimed to be the leader and to have
-			// submitted our command; wait a while for agreement.
 			t1 := time.Now()
 			for time.Since(t1).Seconds() < 2 {
 				nd, cmd1 := cfg.nCommitted(index)
 				if nd > 0 && nd >= expectedServers {
-					// committed
 					if cmd2, ok := cmd1.(int); ok && cmd2 == cmd {
-						// and it was the command we submitted.
 						return index
 					}
 				}
@@ -449,9 +415,6 @@ func (cfg *config) one(cmd int, expectedServers int, retry bool) int {
 	return -1
 }
 
-// start a Test.
-// print the Test message.
-// e.g. cfg.begin("Test (2B): RPC counts aren't too high")
 func (cfg *config) begin(description string) {
 	fmt.Printf("%s ...\n", description)
 	cfg.t0 = time.Now()
@@ -460,10 +423,6 @@ func (cfg *config) begin(description string) {
 	cfg.maxIndex0 = cfg.maxIndex
 }
 
-// end a Test -- the fact that we got here means there
-// was no failure.
-// print the Passed message,
-// and some performance numbers.
 func (cfg *config) end() {
 	cfg.checkTimeout()
 	if cfg.t.Failed() == false {

@@ -12,10 +12,9 @@ import (
 	"time"
 )
 
-const AppendEntriesInterval = time.Duration(100 * time.Millisecond) // sleep time between successive AppendEntries call
+const AppendEntriesInterval = time.Duration(100 * time.Millisecond)
 const ElectionTimeout = time.Duration(1000 * time.Millisecond)
 
-// seed random number generator
 func init() {
 	labgob.Register(LogEntry{})
 	max := big.NewInt(int64(1) << 62)
@@ -25,7 +24,6 @@ func init() {
 	log.SetFlags(log.LstdFlags | log.Lmicroseconds)
 }
 
-// generate random time duration that is between minDuration and 2x minDuration
 func newRandDuration(minDuration time.Duration) time.Duration {
 	extra := time.Duration(rand.Int63()) % minDuration
 	return time.Duration(minDuration + extra)
@@ -55,13 +53,10 @@ type Raft struct {
 }
 
 func (rf *Raft) resetElectionTimer(duration time.Duration) {
-	// Always stop a electionTimer before reusing it. See https://golang.org/pkg/time/#Timer.Reset
-	// We ignore the value return from Stop() because if Stop() return false, the value inside the channel has been drained out
 	rf.electionTimer.Stop()
 	rf.electionTimer.Reset(duration)
 }
 
-// After a leader comes to power, it calls this function to initialize nextIndex and matchIndex
 func (rf *Raft) initIndex() {
 	peersNum := len(rf.peers)
 	rf.nextIndex, rf.matchIndex = make([]int, peersNum), make([]int, peersNum)
@@ -71,7 +66,6 @@ func (rf *Raft) initIndex() {
 	}
 }
 
-// save Raft's persistent state to stable storage, where it can later be retrieved after a crash and restart.
 func (rf *Raft) persist() {
 	data := rf.getPersistState()
 	rf.persister.SaveRaftState(data)
@@ -124,8 +118,6 @@ func (rf *Raft) PersistAndSaveSnapshot(lastIncludedIndex int, snapshot []byte) {
 	}
 }
 
-// because snapshot will replace committed log entries in log
-// thus the length of rf.log is different from(less than or equal) rf.logIndex
 func (rf *Raft) getOffsetIndex(i int) int {
 	return i - rf.lastIncludedIndex
 }
@@ -185,10 +177,10 @@ func (rf *Raft) campaign() {
 		rf.mu.Unlock()
 		return
 	}
-	rf.leaderId = -1     // server believes there is no leader
-	rf.state = Candidate // transition to candidate state
-	rf.currentTerm += 1  // increment current term
-	rf.votedFor = rf.me  // vote for self
+	rf.leaderId = -1
+	rf.state = Candidate
+	rf.currentTerm += 1
+	rf.votedFor = rf.me
 	currentTerm, lastLogIndex, me := rf.currentTerm, rf.logIndex-1, rf.me
 	lastLogTerm := rf.getEntry(lastLogIndex).LogTerm
 	DPrintf("%d at %d start election, last index %d last term %d last entry %v",
@@ -197,7 +189,7 @@ func (rf *Raft) campaign() {
 	args := RequestVoteArgs{Term: currentTerm, CandidateId: rf.me, LastLogIndex: lastLogIndex, LastLogTerm: lastLogTerm}
 	electionDuration := newRandDuration(ElectionTimeout)
 	rf.resetElectionTimer(electionDuration)
-	timer := time.After(electionDuration) // in case there's no quorum, this election should timeout
+	timer := time.After(electionDuration)
 	rf.mu.Unlock()
 	replyCh := make(chan RequestVoteReply, len(rf.peers)-1)
 	for i := 0; i < len(rf.peers); i++ {
@@ -205,19 +197,19 @@ func (rf *Raft) campaign() {
 			go rf.solicit(i, args, replyCh)
 		}
 	}
-	voteCount, threshold := 0, len(rf.peers)/2 // counting vote
+	voteCount, threshold := 0, len(rf.peers)/2
 	for voteCount < threshold {
 		select {
 		case <-rf.shutdown:
 			return
-		case <-timer: // election timeout
+		case <-timer:
 			return
 		case reply := <-replyCh:
 			if reply.Err != OK {
 				go rf.solicit(reply.Server, args, replyCh)
 			} else if reply.VoteGranted {
 				voteCount += 1
-			} else { // since other server don't grant the vote, check if this server is obsolete
+			} else {
 				rf.mu.Lock()
 				if rf.currentTerm < reply.Term {
 					rf.stepDown(reply.Term)
@@ -226,15 +218,14 @@ func (rf *Raft) campaign() {
 			}
 		}
 	}
-	// receive enough vote
 	rf.mu.Lock()
-	if rf.state == Candidate { // check if server is in candidate state before becoming a leader
+	if rf.state == Candidate {
 		DPrintf("CANDIDATE: %d receive enough vote and becoming a new leader", rf.me)
 		rf.state = Leader
-		rf.initIndex() // after election, reinitialized nextIndex and matchIndex
+		rf.initIndex()
 		go rf.tick()
 		go rf.notifyNewLeader()
-	} // if server is not in candidate state, then another server may establishes itself as leader
+	}
 	rf.mu.Unlock()
 }
 
@@ -262,17 +253,17 @@ func (rf *Raft) sendLogEntry(follower int) {
 	if rf.peers[follower].Call("Raft.AppendEntries", &args, &reply) {
 		rf.mu.Lock()
 		if !reply.Success {
-			if reply.Term > rf.currentTerm { // the leader is obsolete
+			if reply.Term > rf.currentTerm {
 				rf.stepDown(reply.Term)
-			} else { // follower is inconsistent with leader
+			} else {
 				rf.nextIndex[follower] = Max(1, Min(reply.ConflictIndex, rf.logIndex))
 				if rf.nextIndex[follower] <= rf.lastIncludedIndex {
 					go rf.sendSnapshot(follower)
 				}
 			}
-		} else { // reply.Success is true
+		} else {
 			prevLogIndex, logEntriesLen := args.PrevLogIndex, args.Len
-			if prevLogIndex+logEntriesLen >= rf.nextIndex[follower] { // in case apply arrive in out of order
+			if prevLogIndex+logEntriesLen >= rf.nextIndex[follower] {
 				rf.nextIndex[follower] = prevLogIndex + logEntriesLen + 1
 				rf.matchIndex[follower] = prevLogIndex + logEntriesLen
 			}
@@ -337,20 +328,18 @@ func (rf *Raft) replicate() {
 	}
 }
 
-// return currentTerm and whether this server believes it is the leader.
 func (rf *Raft) GetState() (int, bool) {
-	rf.mu.Lock() // use synchronization to ensure visibility
+	rf.mu.Lock()
 	defer rf.mu.Unlock()
 	return rf.currentTerm, rf.state == Leader
 }
 
-// start new log entry
 func (rf *Raft) Start(command interface{}) (int, int, bool) {
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
 	if rf.state != Leader {
 		return -1, -1, false
-	} // append log only if server is leader
+	}
 	index := rf.logIndex
 	entry := LogEntry{LogIndex: index, LogTerm: rf.currentTerm, Command: command}
 	if offsetIndex := rf.getOffsetIndex(rf.logIndex); offsetIndex < len(rf.log) {
@@ -429,19 +418,19 @@ func Make(peers []*labrpc.ClientEnd, me int, persister *Persister, applyCh chan 
 	rf.lastApplied = 0
 	rf.lastIncludedIndex = 0
 	rf.logIndex = 1
-	rf.state = Follower // initializing as follower
+	rf.state = Follower
 	rf.shutdown = make(chan struct{})
-	rf.log = []LogEntry{{0, 0, nil}} // log entry at index 0 is unused
+	rf.log = []LogEntry{{0, 0, nil}}
 	rf.applyCh = applyCh
 	rf.notifyApplyCh = make(chan struct{}, 100)
 	rf.electionTimer = time.NewTimer(newRandDuration(ElectionTimeout))
-	rf.readPersistState() // initialize from state persisted before a crash
+	rf.readPersistState()
 	go rf.apply()
 	go func() {
 		for {
 			select {
 			case <-rf.electionTimer.C:
-				rf.campaign() // follower timeout, start a new election
+				rf.campaign()
 			case <-rf.shutdown:
 				return
 			}

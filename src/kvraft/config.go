@@ -55,10 +55,9 @@ type config struct {
 	nextClientId int
 	maxraftstate int
 	start        time.Time // time at which make_config() was called
-	// begin()/end() statistics
-	t0    time.Time // time at which test_test.go called cfg.begin()
-	rpcs0 int       // rpcTotal() at start of test
-	ops   int32     // number of clerk get/put/append method calls
+	t0           time.Time // time at which test_test.go called cfg.begin()
+	rpcs0        int       // rpcTotal() at start of test
+	ops          int32     // number of clerk get/put/append method calls
 }
 
 func (cfg *config) checkTimeout() {
@@ -104,12 +103,9 @@ func (cfg *config) SnapshotSize() int {
 	return snapshotsize
 }
 
-// attach server i to servers listed in to
-// caller must hold cfg.mu
 func (cfg *config) connectUnlocked(i int, to []int) {
 	// log.Printf("connect peer %d to %v\n", i, to)
 
-	// outgoing socket files
 	for j := 0; j < len(to); j++ {
 		endname := cfg.endnames[i][to[j]]
 		cfg.net.Enable(endname, true)
@@ -128,8 +124,6 @@ func (cfg *config) connect(i int, to []int) {
 	cfg.connectUnlocked(i, to)
 }
 
-// detach server i from the servers listed in from
-// caller must hold cfg.mu
 func (cfg *config) disconnectUnlocked(i int, from []int) {
 	// log.Printf("disconnect peer %d from %v\n", i, from)
 
@@ -172,7 +166,6 @@ func (cfg *config) ConnectAll() {
 	}
 }
 
-// Sets up 2 partitions with connectivity between servers in each  partition.
 func (cfg *config) partition(p1 []int, p2 []int) {
 	cfg.mu.Lock()
 	defer cfg.mu.Unlock()
@@ -187,9 +180,6 @@ func (cfg *config) partition(p1 []int, p2 []int) {
 	}
 }
 
-// Create a clerk with clerk specific server names.
-// Give it connections to all of the servers, but for
-// now enable only connections to servers in to[].
 func (cfg *config) makeClient(to []int) *Clerk {
 	cfg.mu.Lock()
 	defer cfg.mu.Unlock()
@@ -260,18 +250,8 @@ func (cfg *config) ShutdownServer(i int) {
 
 	cfg.disconnectUnlocked(i, cfg.All())
 
-	// disable client connections to the server.
-	// it's important to do this before creating
-	// the new Persister in saved[i], to avoid
-	// the possibility of the server returning a
-	// positive reply to an Append but persisting
-	// the result in the superseded Persister.
 	cfg.net.DeleteServer(i)
 
-	// a fresh persister, in case old instance
-	// continues to update the Persister.
-	// but copy old persister's content so that we always
-	// pass Make() the last persisted state.
 	if cfg.saved[i] != nil {
 		cfg.saved[i] = cfg.saved[i].Copy()
 	}
@@ -289,24 +269,17 @@ func (cfg *config) ShutdownServer(i int) {
 func (cfg *config) StartServer(i int) {
 	cfg.mu.Lock()
 
-	// a fresh set of outgoing ClientEnd names.
 	cfg.endnames[i] = make([]string, cfg.n)
 	for j := 0; j < cfg.n; j++ {
 		cfg.endnames[i][j] = randstring(20)
 	}
 
-	// a fresh set of ClientEnds.
 	ends := make([]*labrpc.ClientEnd, cfg.n)
 	for j := 0; j < cfg.n; j++ {
 		ends[j] = cfg.net.MakeEnd(cfg.endnames[i][j])
 		cfg.net.Connect(cfg.endnames[i][j], j)
 	}
 
-	// a fresh persister, so old instance doesn't overwrite
-	// new instance's persisted state.
-	// give the fresh persister a copy of the old persister's
-	// state, so that the spec is that we pass StartKVServer()
-	// the last persisted state.
 	if cfg.saved[i] != nil {
 		cfg.saved[i] = cfg.saved[i].Copy()
 	} else {
@@ -337,7 +310,6 @@ func (cfg *config) Leader() (bool, int) {
 	return false, 0
 }
 
-// Partition servers into 2 groups and put current leader in minority
 func (cfg *config) make_partition() ([]int, []int) {
 	_, l := cfg.Leader()
 	p1 := make([]int, cfg.n/2+1)
@@ -375,11 +347,10 @@ func make_config(t *testing.T, n int, unreliable bool, maxraftstate int) *config
 	cfg.saved = make([]*raft.Persister, cfg.n)
 	cfg.endnames = make([][]string, cfg.n)
 	cfg.clerks = make(map[*Clerk][]string)
-	cfg.nextClientId = cfg.n + 1000 // client ids start 1000 above the highest serverid
+	cfg.nextClientId = cfg.n + 1000
 	cfg.maxraftstate = maxraftstate
 	cfg.start = time.Now()
 
-	// create a full set of KV servers.
 	for i := 0; i < cfg.n; i++ {
 		cfg.StartServer(i)
 	}
@@ -395,9 +366,6 @@ func (cfg *config) rpcTotal() int {
 	return cfg.net.GetTotalCount()
 }
 
-// start a Test.
-// print the Test message.
-// e.g. cfg.begin("Test (2B): RPC counts aren't too high")
 func (cfg *config) begin(description string) {
 	fmt.Printf("%s ...\n", description)
 	cfg.t0 = time.Now()
@@ -409,17 +377,13 @@ func (cfg *config) op() {
 	atomic.AddInt32(&cfg.ops, 1)
 }
 
-// end a Test -- the fact that we got here means there
-// was no failure.
-// print the Passed message,
-// and some performance numbers.
 func (cfg *config) end() {
 	cfg.checkTimeout()
 	if cfg.t.Failed() == false {
-		t := time.Since(cfg.t0).Seconds()  // real time
-		npeers := cfg.n                    // number of Raft peers
-		nrpc := cfg.rpcTotal() - cfg.rpcs0 // number of RPC sends
-		ops := atomic.LoadInt32(&cfg.ops)  //  number of clerk get/put/append calls
+		t := time.Since(cfg.t0).Seconds()
+		npeers := cfg.n
+		nrpc := cfg.rpcTotal() - cfg.rpcs0
+		ops := atomic.LoadInt32(&cfg.ops)
 
 		fmt.Printf("  ... Passed --")
 		fmt.Printf("  %4.1f  %d %5d %4d\n", t, npeers, nrpc, ops)

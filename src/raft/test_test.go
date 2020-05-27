@@ -9,8 +9,6 @@ import (
 	"time"
 )
 
-// The tester generously allows solutions to complete elections in one second
-// (much more than the paper's range of timeouts).
 const RaftElectionTimeout = 1000 * time.Millisecond
 
 func TestInitialElection2A(t *testing.T) {
@@ -20,22 +18,17 @@ func TestInitialElection2A(t *testing.T) {
 
 	cfg.begin("Test (2A): initial election")
 
-	// is a leader elected?
 	cfg.checkOneLeader()
 
-	// sleep a bit to avoid racing with followers learning of the
-	// election, then check that all peers agree on the term.
 	time.Sleep(50 * time.Millisecond)
 	term1 := cfg.checkTerms()
 
-	// does the leader+term stay the same if there is no network failure?
 	time.Sleep(2 * RaftElectionTimeout)
 	term2 := cfg.checkTerms()
 	if term1 != term2 {
 		fmt.Printf("warning: term changed even though there were no failures")
 	}
 
-	// there should still be a leader.
 	cfg.checkOneLeader()
 
 	cfg.end()
@@ -50,27 +43,20 @@ func TestReElection2A(t *testing.T) {
 
 	leader1 := cfg.checkOneLeader()
 
-	// if the leader disconnects, a new one should be elected.
 	cfg.disconnect(leader1)
 	cfg.checkOneLeader()
 
-	// if the old leader rejoins, that shouldn't
-	// disturb the new leader.
 	cfg.connect(leader1)
 	leader2 := cfg.checkOneLeader()
 
-	// if there's no quorum, no leader should
-	// be elected.
 	cfg.disconnect(leader2)
 	cfg.disconnect((leader2 + 1) % servers)
 	time.Sleep(2 * RaftElectionTimeout)
 	cfg.checkNoLeader()
 
-	// if a quorum arises, it should elect a leader.
 	cfg.connect((leader2 + 1) % servers)
 	cfg.checkOneLeader()
 
-	// re-join of last node shouldn't prevent leader from existing.
 	cfg.connect(leader2)
 	cfg.checkOneLeader()
 
@@ -113,17 +99,14 @@ func TestFailAgree2B(t *testing.T) {
 	leader := cfg.checkOneLeader()
 	cfg.disconnect((leader + 1) % servers)
 
-	// agree despite one disconnected server?
 	cfg.one(102, servers-1, false)
 	cfg.one(103, servers-1, false)
 	time.Sleep(RaftElectionTimeout)
 	cfg.one(104, servers-1, false)
 	cfg.one(105, servers-1, false)
 
-	// re-connect
 	cfg.connect((leader + 1) % servers)
 
-	// agree with full set of servers?
 	cfg.one(106, servers, true)
 	time.Sleep(RaftElectionTimeout)
 	cfg.one(107, servers, true)
@@ -166,8 +149,6 @@ func TestFailNoAgree2B(t *testing.T) {
 	cfg.connect((leader + 2) % servers)
 	cfg.connect((leader + 3) % servers)
 
-	// the disconnected majority may have chosen a leader from
-	// among their own ranks, forgetting index 2.
 	leader2 := cfg.checkOneLeader()
 	index2, _, ok2 := cfg.rafts[leader2].Start(30)
 	if ok2 == false {
@@ -336,7 +317,6 @@ func TestBackup2B(t *testing.T) {
 	cfg.disconnect((leader1 + 3) % servers)
 	cfg.disconnect((leader1 + 4) % servers)
 
-	// submit lots of commands that won't commit
 	for i := 0; i < 50; i++ {
 		cfg.rafts[leader1].Start(rand.Int())
 	}
@@ -346,17 +326,14 @@ func TestBackup2B(t *testing.T) {
 	cfg.disconnect((leader1 + 0) % servers)
 	cfg.disconnect((leader1 + 1) % servers)
 
-	// allow other partition to recover
 	cfg.connect((leader1 + 2) % servers)
 	cfg.connect((leader1 + 3) % servers)
 	cfg.connect((leader1 + 4) % servers)
-
-	// lots of successful commands to new group.
+.
 	for i := 0; i < 50; i++ {
 		cfg.one(rand.Int(), 3, true)
 	}
 
-	// now another partitioned leader and one follower
 	leader2 := cfg.checkOneLeader()
 	other := (leader1 + 2) % servers
 	if leader2 == other {
@@ -364,14 +341,12 @@ func TestBackup2B(t *testing.T) {
 	}
 	cfg.disconnect(other)
 
-	// lots more commands that won't commit
 	for i := 0; i < 50; i++ {
 		cfg.rafts[leader2].Start(rand.Int())
 	}
 
 	time.Sleep(RaftElectionTimeout / 2)
 
-	// bring original leader back to life,
 	for i := 0; i < servers; i++ {
 		cfg.disconnect(i)
 	}
@@ -379,7 +354,6 @@ func TestBackup2B(t *testing.T) {
 	cfg.connect((leader1 + 1) % servers)
 	cfg.connect(other)
 
-	// lots of successful commands to new group.
 	for i := 0; i < 50; i++ {
 		cfg.one(rand.Int(), 3, true)
 	}
@@ -420,7 +394,6 @@ func TestCount2B(t *testing.T) {
 loop:
 	for try := 0; try < 5; try++ {
 		if try > 0 {
-			// give solution some time to settle
 			time.Sleep(3 * time.Second)
 		}
 
@@ -430,7 +403,6 @@ loop:
 		iters := 10
 		starti, term, ok := cfg.rafts[leader].Start(1)
 		if !ok {
-			// leader moved on really quickly
 			continue
 		}
 		cmds := []int{}
@@ -439,11 +411,9 @@ loop:
 			cmds = append(cmds, x)
 			index1, term1, ok := cfg.rafts[leader].Start(x)
 			if term1 != term {
-				// Term changed while starting
 				continue loop
 			}
 			if !ok {
-				// No longer the leader, so term has changed
 				continue loop
 			}
 			if starti+i != index1 {
@@ -466,8 +436,6 @@ loop:
 		total2 = 0
 		for j := 0; j < servers; j++ {
 			if t, _ := cfg.rafts[j].GetState(); t != term {
-				// term changed -- can't expect low RPC counts
-				// need to keep going to update total2
 				failed = true
 			}
 			total2 += cfg.rpcCount(j)
@@ -536,7 +504,7 @@ func TestPersist12C(t *testing.T) {
 	cfg.start1(leader2)
 	cfg.connect(leader2)
 
-	cfg.wait(4, servers, -1) // wait for leader2 to join before killing i3
+	cfg.wait(4, servers, -1)
 
 	i3 := (cfg.checkOneLeader() + 1) % servers
 	cfg.disconnect(i3)
@@ -625,16 +593,6 @@ func TestPersist32C(t *testing.T) {
 	cfg.end()
 }
 
-//
-// Test the scenarios described in Figure 8 of the extended Raft paper. Each
-// iteration asks a leader, if there is one, to insert a command in the Raft
-// log.  If there is a leader, that leader will fail quickly with a high
-// probability (perhaps without committing the command), or crash after a while
-// with low probability (most likey committing the command).  If the number of
-// alive servers isn't enough to form a majority, perhaps start a new server.
-// The leader in a new term may try to finish replicating log entries that
-// haven't been committed yet.
-//
 func TestFigure82C(t *testing.T) {
 	servers := 5
 	cfg := make_config(t, servers, false)
@@ -800,7 +758,6 @@ func internalChurn(t *testing.T, unreliable bool) {
 			index := -1
 			ok := false
 			for i := 0; i < servers; i++ {
-				// try them all, maybe one of them is a leader
 				cfg.mu.Lock()
 				rf := cfg.rafts[i]
 				cfg.mu.Unlock()
@@ -813,8 +770,6 @@ func internalChurn(t *testing.T, unreliable bool) {
 				}
 			}
 			if ok {
-				// maybe leader will commit our value, maybe not.
-				// but don't wait forever.
 				for _, to := range []int{10, 20, 50, 100, 200} {
 					nd, cmd := cfg.nCommitted(index)
 					if nd > 0 {
@@ -864,10 +819,6 @@ func internalChurn(t *testing.T, unreliable bool) {
 			}
 		}
 
-		// Make crash/restart infrequent enough that the peers can often
-		// keep up, but not so infrequent that everything has settled
-		// down from one change to the next. Pick a value smaller than
-		// the election timeout, but not hugely smaller.
 		time.Sleep((RaftElectionTimeout * 7) / 10)
 	}
 

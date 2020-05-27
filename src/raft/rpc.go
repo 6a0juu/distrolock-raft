@@ -1,7 +1,5 @@
 package raft
 
-// place raft RPC handle in one file
-
 // RequestVote RPC handler.
 func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	rf.mu.Lock()
@@ -11,24 +9,24 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 		reply.VoteGranted, reply.Term = true, rf.currentTerm
 		return
 	}
-	if rf.currentTerm > args.Term || // valid candidate
-		(rf.currentTerm == args.Term && rf.votedFor != -1) { // the server has voted in this term
+	if rf.currentTerm > args.Term ||
+		(rf.currentTerm == args.Term && rf.votedFor != -1) {
 		reply.Term, reply.VoteGranted = rf.currentTerm, false
 		return
 	}
 	if args.Term > rf.currentTerm {
 		rf.currentTerm, rf.votedFor = args.Term, -1
-		if rf.state != Follower { // once server becomes follower, it has to reset electionTimer
+		if rf.state != Follower {
 			rf.resetElectionTimer(newRandDuration(ElectionTimeout))
 			rf.state = Follower
 		}
 	}
-	rf.leaderId = -1 // other server trying to elect a new leader
+	rf.leaderId = -1
 	reply.Term = args.Term
 	lastLogIndex := rf.logIndex - 1
 	lastLogTerm := rf.getEntry(lastLogIndex).LogTerm
-	if lastLogTerm > args.LastLogTerm || // the server has log with higher term
-		(lastLogTerm == args.LastLogTerm && lastLogIndex > args.LastLogIndex) { // under same term, this server has longer index
+	if lastLogTerm > args.LastLogTerm ||
+		(lastLogTerm == args.LastLogTerm && lastLogIndex > args.LastLogIndex) {
 		reply.VoteGranted = false
 		return
 	}
@@ -42,14 +40,13 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply) {
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
-	if rf.currentTerm > args.Term { // RPC call comes from an illegitimate leader
+	if rf.currentTerm > args.Term {
 		reply.Term, reply.Success = rf.currentTerm, false
 		return
-	} // else args.Term >= rf.currentTerm
-
+	}
 	reply.Term = args.Term
 	rf.leaderId = args.LeaderId
-	rf.resetElectionTimer(newRandDuration(ElectionTimeout)) // reset electionTimer
+	rf.resetElectionTimer(newRandDuration(ElectionTimeout))
 	if args.Term > rf.currentTerm {
 		rf.currentTerm, rf.votedFor = args.Term, -1
 	}
@@ -110,10 +107,10 @@ func (rf *Raft) InstallSnapshot(args *InstallSnapshotArgs, reply *InstallSnapsho
 		oldCommitIndex := rf.commitIndex
 		rf.commitIndex = Max(rf.commitIndex, rf.lastIncludedIndex)
 		rf.logIndex = Max(rf.logIndex, rf.lastIncludedIndex+1)
-		if truncationStartIndex < len(rf.log) { // snapshot contain a prefix of its log
+		if truncationStartIndex < len(rf.log) {
 			rf.log = append(rf.log[truncationStartIndex:])
-		} else { // snapshot contain new information not already in the follower's log
-			rf.log = []LogEntry{{args.LastIncludedIndex, args.LastIncludedTerm, nil}} // discards entire log
+		} else {
+			rf.log = []LogEntry{{args.LastIncludedIndex, args.LastIncludedTerm, nil}}
 		}
 		rf.persister.SaveStateAndSnapshot(rf.getPersistState(), args.Data)
 		if rf.commitIndex > oldCommitIndex {

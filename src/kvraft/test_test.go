@@ -5,6 +5,7 @@ import (
 	"math/rand"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -12,8 +13,6 @@ import (
 
 //import "sync"
 
-// The tester generously allows solutions to complete elections in one second
-// (much more than the paper's range of timeouts).
 const electionTimeout = 1 * time.Second
 
 // get/put/putappend that keep counts
@@ -72,8 +71,6 @@ func NextValue(prev string, val string) string {
 	return prev + val
 }
 
-// check that for a specific client all known appends are present in a value,
-// and in order
 func checkClntAppends(t *testing.T, clnt int, v string, count int) {
 	lastoff := -1
 	for j := 0; j < count; j++ {
@@ -93,8 +90,6 @@ func checkClntAppends(t *testing.T, clnt int, v string, count int) {
 	}
 }
 
-// check that all known appends are present in a value,
-// and are in order for each concurrent client.
 func checkConcurrentAppends(t *testing.T, v string, counts []int) {
 	nclients := len(counts)
 	for i := 0; i < nclients; i++ {
@@ -176,11 +171,13 @@ func GenericTest(t *testing.T, part string, nclients int, unreliable bool, crash
 	done_clients := int32(0)
 	done_initialize := int32(0)
 	ch_partitioner := make(chan bool)
+	wg := sync.WaitGroup{}
+	wg.Add(nclients)
 	clnts := make([]chan int, nclients)
 	for i := 0; i < nclients; i++ {
 		clnts[i] = make(chan int)
 	}
-	for i := 0; i < 3; i++ {
+	for i := 0; i < 1; i++ {
 		// log.Printf("Iteration %v\n", i)
 		atomic.StoreInt32(&done_clients, 0)
 		atomic.StoreInt32(&done_partitioner, 0)
@@ -192,41 +189,36 @@ func GenericTest(t *testing.T, part string, nclients int, unreliable bool, crash
 			}()
 			last := ""
 			//key := strconv.Itoa(1)
-			// Initialize the locks, the number of locks equals to the number of clients
 			key := strconv.Itoa(cli)
 			Put(cfg, myck, key, last)
 			//////////////////////////////////////
 			//for atomic.LoadInt32(&done_clients) == 0 {
 			// Preept the locks
+
 			for lockiter := 0; lockiter < nclients; lockiter++ {
 				//lockiter := cli
 				key := strconv.Itoa(lockiter)
-				//if (rand.Int() % 1000) < 500 {
 				now := time.Now()
-				nanots := (int)(now.UnixNano() & 0x3FFFFFFFFF)
+				nanots := (int64)(now.UnixNano() & 0x3FFFFFFFFF)
 				nv := "I" + strconv.Itoa(cli) + "T" + strconv.Itoa(nanots)
-				log.Printf("%d: client new append k:%v, v:%v\n", cli, key, nv)
+				//log.Printf("%d: client new append k:%v, v:%v\n", cli, key, nv)
 				Append(cfg, myck, key, nv)
 				last = NextValue(last, nv)
 				j++
-				/*
-					} else {
-						v := Get(cfg, myck, key)
-						log.Printf("%d: client new get k:%v, v:%v\n", cli, key, v)
-						if v != last {
-							//log.Printf("get wrong value, key %v, wanted:%v\n, got:%v\n", key, last, v)
-						}
+			}
+			//afnow := (int64)(time.Now().UnixNano()&0x3FFFFFFFFF) - nanots
+			//log.Printf("%d: client new append %v keys, used %v miloseconds\n", cli, nclients, afnow/1000000)
+			/*
+				time.Sleep(50 * time.Millisecond)
+				for lockiter := 0; lockiter < nclients; lockiter++ {
+					key := strconv.Itoa(lockiter)
+					v := Get(cfg, ck, key)
+					if tmps, err := strconv.Atoi(v[1:2]); err == nil && tmps == cli {
+						log.Printf("the lock %v is used by node %s\n", lockiter, v[0:2])
 					}
-				*/
-			}
-			time.Sleep(50 * time.Millisecond)
-			for lockiter := 0; lockiter < nclients; lockiter++ {
-				key := strconv.Itoa(lockiter)
-				v := Get(cfg, ck, key)
-				if tmps, err := strconv.Atoi(v[1:2]); err == nil && tmps == cli {
-					log.Printf("the lock %v is used by node %s\n", lockiter, v[0:2])
 				}
-			}
+			*/
+			wg.Done()
 		})
 
 		if partitions {
@@ -234,7 +226,8 @@ func GenericTest(t *testing.T, part string, nclients int, unreliable bool, crash
 			time.Sleep(1 * time.Second)
 			go partitioner(t, cfg, ch_partitioner, &done_partitioner)
 		}
-		time.Sleep(5 * time.Second)
+		//time.Sleep(20 * time.Second)
+		wg.Wait()
 
 		atomic.StoreInt32(&done_clients, 1)     // tell clients to quit
 		atomic.StoreInt32(&done_partitioner, 1) // tell partitioner to quit
@@ -242,12 +235,7 @@ func GenericTest(t *testing.T, part string, nclients int, unreliable bool, crash
 		if partitions {
 			// log.Printf("wait for partitioner\n")
 			<-ch_partitioner
-			// reconnect network and submit a request. A client may
-			// have submitted a request in a minority.  That request
-			// won't return until that server discovers a new term
-			// has started.
 			cfg.ConnectAll()
-			// wait for a while so that we have a new term
 			time.Sleep(electionTimeout)
 		}
 
@@ -256,11 +244,8 @@ func GenericTest(t *testing.T, part string, nclients int, unreliable bool, crash
 			for i := 0; i < nservers; i++ {
 				cfg.ShutdownServer(i)
 			}
-			// Wait for a while for servers to shutdown, since
-			// shutdown isn't a real crash and isn't instantaneous
 			time.Sleep(electionTimeout)
 			// log.Printf("restart servers\n")
-			// crash and re-start all
 			for i := 0; i < nservers; i++ {
 				cfg.StartServer(i)
 			}
@@ -275,16 +260,14 @@ func GenericTest(t *testing.T, part string, nclients int, unreliable bool, crash
 			// 	log.Printf("Warning: client %d managed to perform only %d put operations in 1 sec?\n", i, j)
 			// }
 			key := strconv.Itoa(i)
-			// log.Printf("Check %v for client %d\n", j, i)
+			//orzlog.Printf("Check %v for client %d\n", j, i)
 			v := Get(cfg, ck, key)
-			//log.Printf("the lock %v is used by node %s\n", i, v[0:2])
+			log.Printf("the lock %v is used by node %s\n", i, v[0:2])
 			log.Printf("get k:%v, v:%v\n", key, v)
-			//checkClntAppends(t, i, v, j)
+			//przcheckClntAppends(t, i, v, j)
 		}
 
 		if maxraftstate > 0 {
-			// Check maximum after the servers have processed all client
-			// requests and had time to checkpoint.
 			if cfg.LogSize() > 2*maxraftstate {
 				t.Fatalf("logs were not trimmed (%v > 2*%v)", cfg.LogSize(), maxraftstate)
 			}
@@ -296,7 +279,7 @@ func GenericTest(t *testing.T, part string, nclients int, unreliable bool, crash
 
 func TestConcurrent3A(t *testing.T) {
 	// Test: many clients (3A) ...
-	GenericTest(t, "3A", 3, false, false, false, -1)
+	GenericTest(t, "3A", 2, false, false, false, -1)
 }
 
 /*
@@ -573,5 +556,162 @@ func TestSnapshotUnreliableRecover3B(t *testing.T) {
 func TestSnapshotUnreliableRecoverConcurrentPartition3B(t *testing.T) {
 	// Test: unreliable net, restarts, partitions, snapshots, many clients (3B) ...
 	GenericTest(t, "3B", 5, true, true, true, 1000)
+}
+*/
+
+/* speed test
+func GenericTest(t *testing.T, part string, nclients int, unreliable bool, crash bool, partitions bool, maxraftstate int) {
+
+	title := "Test: "
+	if unreliable {
+		// the network drops RPC requests and replies.
+		title = title + "unreliable net, "
+	}
+	if crash {
+		// peers re-start, and thus persistence must work.
+		title = title + "restarts, "
+	}
+	if partitions {
+		// the network may partition
+		title = title + "partitions, "
+	}
+	if maxraftstate != -1 {
+		title = title + "snapshots, "
+	}
+	if nclients > 1 {
+		title = title + "many clients"
+	} else {
+		title = title + "one client"
+	}
+	title = title + " (" + part + ")" // 3A or 3B
+
+	const nservers = 5
+	cfg := make_config(t, nservers, unreliable, maxraftstate)
+	defer cfg.cleanup()
+
+	cfg.begin(title)
+
+	ck := cfg.makeClient(cfg.All())
+
+	done_partitioner := int32(0)
+	done_clients := int32(0)
+	done_initialize := int32(0)
+	ch_partitioner := make(chan bool)
+	wg := sync.WaitGroup{}
+	wg.Add(nclients)
+	clnts := make([]chan int, nclients)
+	for i := 0; i < nclients; i++ {
+		clnts[i] = make(chan int)
+	}
+	for i := 0; i < 1; i++ {
+		// log.Printf("Iteration %v\n", i)
+		atomic.StoreInt32(&done_clients, 0)
+		atomic.StoreInt32(&done_partitioner, 0)
+		atomic.StoreInt32(&done_initialize, 0)
+		go spawn_clients_and_wait(t, cfg, nclients, func(cli int, myck *Clerk, t *testing.T) {
+			j := 0
+			defer func() {
+				clnts[cli] <- j
+			}()
+			last := ""
+			//key := strconv.Itoa(1)
+			// Initialize the locks, the number of locks equals to the number of clients
+			key := strconv.Itoa(cli)
+			Put(cfg, myck, key, last)
+			//////////////////////////////////////
+			//for atomic.LoadInt32(&done_clients) == 0 {
+			// Preept the locks
+
+			now := time.Now()
+			nanots := (int64)(now.UnixNano() & 0x3FFFFFFFFF)
+			for lockiter := 0; lockiter < 3000/nclients; lockiter++ {
+				//lockiter := cli
+				key := strconv.Itoa(lockiter)
+				nv := "I" //+ strconv.Itoa(cli) + "T" + strconv.Itoa(nanots)
+				//log.Printf("%d: client new append k:%v, v:%v\n", cli, key, nv)
+				Append(cfg, myck, key, nv)
+				last = NextValue(last, nv)
+				j++
+			}
+			afnow := (int64)(time.Now().UnixNano()&0x3FFFFFFFFF) - nanots
+			log.Printf("%d: client new append %v keys, used %v miloseconds\n", cli, 3000/nclients, afnow/1000000)
+			/*
+				time.Sleep(50 * time.Millisecond)
+				for lockiter := 0; lockiter < nclients; lockiter++ {
+					key := strconv.Itoa(lockiter)
+					v := Get(cfg, ck, key)
+					if tmps, err := strconv.Atoi(v[1:2]); err == nil && tmps == cli {
+						log.Printf("the lock %v is used by node %s\n", lockiter, v[0:2])
+					}
+				}
+*/
+/*
+			wg.Done()
+		})
+
+		if partitions {
+			// Allow the clients to perform some operations without interruption
+			time.Sleep(1 * time.Second)
+			go partitioner(t, cfg, ch_partitioner, &done_partitioner)
+		}
+		//time.Sleep(20 * time.Second)
+		wg.Wait()
+
+		atomic.StoreInt32(&done_clients, 1)     // tell clients to quit
+		atomic.StoreInt32(&done_partitioner, 1) // tell partitioner to quit
+
+		if partitions {
+			// log.Printf("wait for partitioner\n")
+			<-ch_partitioner
+			// reconnect network and submit a request. A client may
+			// have submitted a request in a minority.  That request
+			// won't return until that server discovers a new term
+			// has started.
+			cfg.ConnectAll()
+			// wait for a while so that we have a new term
+			time.Sleep(electionTimeout)
+		}
+
+		if crash {
+			// log.Printf("shutdown servers\n")
+			for i := 0; i < nservers; i++ {
+				cfg.ShutdownServer(i)
+			}
+			// Wait for a while for servers to shutdown, since
+			// shutdown isn't a real crash and isn't instantaneous
+			time.Sleep(electionTimeout)
+			// log.Printf("restart servers\n")
+			// crash and re-start all
+			for i := 0; i < nservers; i++ {
+				cfg.StartServer(i)
+			}
+			cfg.ConnectAll()
+		}
+
+		// log.Printf("wait for clients\n")
+		for i := 0; i < nclients; i++ {
+			// log.Printf("read from clients %d\n", i)
+			// j := <-clnts[i]
+			// if j < 10 {
+			// 	log.Printf("Warning: client %d managed to perform only %d put operations in 1 sec?\n", i, j)
+			// }
+			key := strconv.Itoa(i)
+			//orzlog.Printf("Check %v for client %d\n", j, i)
+			v := Get(cfg, ck, key)
+			//orzlog.Printf("the lock %v is used by node %s\n", i, v[0:2])
+			log.Printf("get k:%v, v:%v\n", key, v)
+			//przcheckClntAppends(t, i, v, j)
+		}
+
+		if maxraftstate > 0 {
+			// Check maximum after the servers have processed all client
+			// requests and had time to checkpoint.
+			if cfg.LogSize() > 2*maxraftstate {
+				t.Fatalf("logs were not trimmed (%v > 2*%v)", cfg.LogSize(), maxraftstate)
+			}
+		}
+	}
+
+	cfg.end()
 }
 */
